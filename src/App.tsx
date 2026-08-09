@@ -29,6 +29,7 @@ function App() {
   const [player2Id, setPlayer2Id] = useState<number | ''>('');
   const [player1Score, setPlayer1Score] = useState<number>(0);
   const [player2Score, setPlayer2Score] = useState<number>(0);
+  const [newPlayerName, setNewPlayerName] = useState('');
 
   const playerOptions = useMemo(
     () => players.map((player) => ({ value: player.id, label: player.name })),
@@ -39,34 +40,58 @@ function App() {
     setLoading(true);
     setError(null);
 
-    const { data: playerStats, error: playerError } = await supabase
-      .from('player_summary')
-      .select('*')
-      .order('total_wins', { ascending: false });
+    const [playersResult, matchRowsResult, recentMatchesResult] = await Promise.all([
+      supabase.from('players').select('id, name'),
+      supabase.from('matches').select('player_1_id, player_2_id, winner_id'),
+      supabase
+        .from('matches')
+        .select(`id, player_1_id, player_2_id, player_1_score, player_2_score, winner_id, played_at, player_1:player_1_id(name), player_2:player_2_id(name)`)
+        .order('played_at', { ascending: false })
+        .limit(20),
+    ]);
 
-    const { data: recentMatches, error: matchError } = await supabase
-      .from('matches')
-      .select(`id, player_1_id, player_2_id, player_1_score, player_2_score, winner_id, played_at, player_1:player_1_id(name), player_2:player_2_id(name)`)
-      .order('played_at', { ascending: false })
-      .limit(20);
-
-    if (playerError || matchError) {
-      setError(playerError?.message || matchError?.message || 'Failed to load data');
+    if (playersResult.error || matchRowsResult.error || recentMatchesResult.error) {
+      setError(
+        playersResult.error?.message || matchRowsResult.error?.message || recentMatchesResult.error?.message || 'Failed to load data'
+      );
       setLoading(false);
       return;
     }
 
-    setPlayers(
-      (playerStats ?? []).map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        total_games_played: row.total_games_played,
-        total_wins: row.total_wins,
-      }))
-    );
+    const playersData = playersResult.data ?? [];
+    const matchRows = matchRowsResult.data ?? [];
+
+    const statsMap = new Map<number, PlayerSummary>();
+    playersData.forEach((player) => {
+      statsMap.set(player.id, {
+        id: player.id,
+        name: player.name,
+        total_games_played: 0,
+        total_wins: 0,
+      });
+    });
+
+    matchRows.forEach((match: any) => {
+      const player1 = statsMap.get(match.player_1_id);
+      const player2 = statsMap.get(match.player_2_id);
+      if (player1) {
+        player1.total_games_played += 1;
+      }
+      if (player2) {
+        player2.total_games_played += 1;
+      }
+      if (match.winner_id) {
+        const winner = statsMap.get(match.winner_id);
+        if (winner) {
+          winner.total_wins += 1;
+        }
+      }
+    });
+
+    setPlayers(Array.from(statsMap.values()).sort((a, b) => b.total_wins - a.total_wins));
 
     setMatches(
-      (recentMatches ?? []).map((row: any) => ({
+      (recentMatchesResult.data ?? []).map((row: any) => ({
         id: row.id,
         player_1_id: row.player_1_id,
         player_2_id: row.player_2_id,
@@ -116,6 +141,28 @@ function App() {
     setPlayer2Id('');
     setPlayer1Score(0);
     setPlayer2Score(0);
+    await fetchData();
+  };
+
+  const createPlayer = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+
+    if (!newPlayerName.trim()) {
+      setError('Enter a player name.');
+      return;
+    }
+
+    const { error: insertError } = await supabase.from('players').insert([
+      { name: newPlayerName.trim() },
+    ]);
+
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
+
+    setNewPlayerName('');
     await fetchData();
   };
 
@@ -185,6 +232,22 @@ function App() {
               </tbody>
             </table>
           )}
+        </section>
+
+        <section className="panel form-panel">
+          <h2>Add Player</h2>
+          <form onSubmit={createPlayer}>
+            <label>
+              Player name
+              <input
+                type="text"
+                value={newPlayerName}
+                onChange={(event) => setNewPlayerName(event.target.value)}
+                placeholder="Enter player name"
+              />
+            </label>
+            <button type="submit">Add Player</button>
+          </form>
         </section>
 
         <section className="panel form-panel">
